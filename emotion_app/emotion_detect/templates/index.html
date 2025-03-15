@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>语音情感分析 - QLU&SDAS</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #2d8cf0;
+            --success-color: #19be6b;
+            --error-color: #ed4014;
+        }
+        .history-item:hover {
+            background: #f8f9fa;
+            cursor: pointer;
+        }
+        .progress-indicator {
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+<div class="container-fluid min-vh-100">
+    <div class="row">
+        <!-- 侧边栏 -->
+        <div class="col-3 bg-light vh-100 p-3 border-end">
+            <h4 class="mb-4">识别历史</h4>
+            <div id="historyList" class="list-group">
+                <!-- 动态加载历史记录 -->
+                <div class="list-group-item history-item">
+                    <div class="d-flex justify-content-between">
+                        <span>2024-03-11 14:30</span>
+                        <span class="badge bg-success">开心</span>
+                    </div>
+                    <small class="text-muted">置信度 92%</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主内容 -->
+        <div class="col-9">
+            <nav class="navbar bg-body-tertiary mb-4">
+                <div class="container-fluid">
+                    <a class="navbar-brand" href="#">
+                        {% load static %}
+                        <img src="{% static 'img/logo.jpeg'%}" width="30" class="d-inline-block align-text-top">
+                        语音情感分析
+                    </a>
+                    <div class="d-flex align-items-center">
+                        <span class="me-3">admin</span>
+                        <div class="spinner-border spinner-border-sm text-primary" role="status" id="globalLoading" style="display: none;">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+
+            <!-- 结果展示区 -->
+            <div class="card mb-4">
+                <div class="card-header">分析结果</div>
+                <div class="card-body">
+                    <div id="resultPanel" class="text-center" style="min-height: 120px;">
+                        <div class="text-muted">等待分析结果...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 操作区 -->
+            <div class="card">
+                <div class="card-header">音频输入</div>
+                <div class="card-body">
+                    <div class="row g-4">
+                        <!-- 录音模块 -->
+                        <div class="col-md-6">
+                            <div class="border p-3 rounded">
+                                <h5 class="mb-3">实时录音</h5>
+                                <div class="d-flex align-items-center gap-2">
+                                    <button id="recordBtn" class="btn btn-primary flex-grow-1">
+                                        <span class="record-text">开始录音</span>
+                                    </button>
+                                    <div id="recordStatus" class="spinner-border spinner-border-sm text-danger d-none" role="status"></div>
+                                </div>
+                                <div class="mt-2 text-muted small" id="recordDuration">
+                                    已录制：0秒
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 上传模块 -->
+                        <div class="col-md-6">
+                            <div class="border p-3 rounded">
+                                <h5 class="mb-3">文件上传</h5>
+                                <div class="input-group">
+                                    <input type="file" class="form-control" id="audioUpload" accept="audio/*">
+                                    <button class="btn btn-outline-secondary" type="button" id="uploadBtn" disabled>
+                                        开始分析
+                                    </button>
+                                </div>
+                                <div class="mt-2">
+                                    <div id="fileInfo" class="small text-muted"></div>
+                                    <div class="progress mt-2" style="height: 4px; display: none;">
+                                        <div id="uploadProgress" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 状态提示 -->
+                    <div id="statusAlert" class="mt-3" style="display: none;">
+                        <!-- 动态插入提示内容 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 状态管理对象
+const appState = {
+    isRecording: false,
+    mediaRecorder: null,
+    audioChunks: [],
+    startTime: null,
+    timer: null
+}
+
+// 录音控制
+document.getElementById('recordBtn').addEventListener('click', async () => {
+    if (!appState.isRecording) {
+        try {
+            appState.audioChunks = [];
+            
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    channelCount: 1,
+                    sampleRate: 16000
+                } 
+            });
+
+            // Create AudioContext and necessary nodes
+            const audioContext = new AudioContext({
+                sampleRate: 16000
+            });
+            const source = audioContext.createMediaStreamSource(stream);
+            const processor = audioContext.createScriptProcessor(16384, 1, 1);
+            
+            const chunks = [];
+            
+            processor.onaudioprocess = (e) => {
+                const inputData = e.inputBuffer.getChannelData(0);
+                const samples = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    const s = Math.max(-1, Math.min(1, inputData[i]));
+                    samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                chunks.push(samples);
+            };
+            
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+            
+            appState.mediaRecorder = {
+                stream,
+                audioContext,
+                processor,
+                source,
+                stop: () => {
+                    source.disconnect();
+                    processor.disconnect();
+                    stream.getTracks().forEach(track => track.stop());
+                    audioContext.close();
+                    
+                    // Combine all chunks into one buffer
+                    const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+                    const combinedBuffer = new Int16Array(totalLength);
+                    let offset = 0;
+                    for (const chunk of chunks) {
+                        combinedBuffer.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    return combinedBuffer;
+                }
+            };
+            
+            appState.isRecording = true;
+            appState.startTime = Date.now();
+            
+            // Set up timer
+            appState.timer = setInterval(() => {
+                const duration = Math.floor((Date.now() - appState.startTime) / 1000);
+                document.getElementById('recordDuration').textContent = `已录制：${duration}秒`;
+            }, 1000);
+            
+            updateUIAfterRecording(true);
+            showAlert('录音已开始，点击按钮停止录音', 'success');
+            
+        } catch (error) {
+            showAlert('无法访问麦克风：' + error.message, 'error');
+            appState.isRecording = false;
+            if (appState.timer) {
+                clearInterval(appState.timer);
+                appState.timer = null;
+            }
+            updateUIAfterRecording(false);
+        }
+    } else {
+        if (appState.mediaRecorder) {
+            const audioData = appState.mediaRecorder.stop();
+            
+            if (appState.timer) {
+                clearInterval(appState.timer);
+                appState.timer = null;
+            }
+            
+            appState.isRecording = false;
+            updateUIAfterRecording(false);
+            
+            // Send audio data to server
+            toggleLoading(true);
+            try {
+                const formData = new FormData();
+                const audioBlob = new Blob([audioData.buffer], { type: 'audio/wav' });
+                formData.append('audio', audioBlob, 'recording.wav');
+                
+                const response = await fetch('/analyze/', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) throw new Error(`HTTP错误! 状态码: ${response.status}`);
+                
+                const data = await response.json();
+                handleResult(data);
+                addToHistory(data);
+                
+            } catch (error) {
+                showAlert(`分析失败: ${error.message}`, 'error');
+            } finally {
+                toggleLoading(false);
+            }
+        }
+    }
+});
+
+
+// 文件上传处理
+document.getElementById('audioUpload').addEventListener('change', function(e) {
+    const file = e.target.files[0]
+    if (file) {
+        const validTypes = ['audio/wav', 'audio/mpeg', 'audio/webm']
+        if (!validTypes.includes(file.type)) {
+            showAlert('不支持的音频格式，请上传WAV/MP3格式', 'error')
+            this.value = ''
+            return
+        }
+        
+        document.getElementById('uploadBtn').disabled = false
+        document.getElementById('fileInfo').innerHTML = `
+            ${file.name}<br>
+            <small>${(file.size / 1024).toFixed(1)}KB</small>
+        `
+        
+        // 模拟上传进度
+        const progressBar = document.querySelector('.progress')
+        const progress = document.getElementById('uploadProgress')
+        progressBar.style.display = 'block'
+        
+        let percent = 0
+        const interval = setInterval(() => {
+            percent += Math.random() * 10
+            progress.style.width = `${Math.min(percent, 100)}%`
+            if (percent >= 100) clearInterval(interval)
+        }, 200)
+    }
+})
+
+// 提交分析
+document.getElementById('uploadBtn').addEventListener('click', async () => {
+    const file = document.getElementById('audioUpload').files[0]
+    if (!file) return
+    
+    toggleLoading(true)
+    try {
+        const formData = new FormData()
+        formData.append('audio', file)
+        
+        const response = await fetch('/analyze/', {
+            method: 'POST',
+            body: formData
+        })
+        
+        if (!response.ok) throw new Error(`HTTP错误! 状态码: ${response.status}`)
+        
+        const data = await response.json()
+        handleResult(data)
+        addToHistory(data)
+        
+    } catch (error) {
+        showAlert(`分析失败: ${error.message}`, 'error')
+    } finally {
+        toggleLoading(false)
+    }
+})
+
+// UI更新函数
+function updateUIAfterRecording(isRecording) {
+    const btn = document.getElementById('recordBtn')
+    btn.classList.toggle('btn-danger', isRecording)
+    btn.classList.toggle('btn-primary', !isRecording)
+    btn.querySelector('.record-text').textContent = isRecording ? '停止录音' : '开始录音'
+    document.getElementById('recordStatus').classList.toggle('d-none', !isRecording)
+}
+
+function showAlert(message, type = 'info') {
+    const alertBox = document.getElementById('statusAlert')
+    alertBox.innerHTML = `
+        <div class="alert alert-${type} alert-dismissible fade show">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `
+    alertBox.style.display = 'block'
+    setTimeout(() => alertBox.style.display = 'none', 5000)
+}
+
+function toggleLoading(show) {
+    document.getElementById('globalLoading').style.display = show ? 'inline-block' : 'none'
+    document.querySelectorAll('button').forEach(btn => btn.disabled = show)
+}
+
+function handleResult(data) {
+    const resultPanel = document.getElementById('resultPanel')
+    const maxScore = Math.max(...data.scores)
+    const emotionIndex = data.scores.indexOf(maxScore)
+    
+    resultPanel.innerHTML = `
+        <div class="d-flex justify-content-center gap-4">
+            <div class="text-center">
+                <div class="fs-1 fw-bold">${data.emotions[emotionIndex].split('/')[0]}</div>
+                <div class="text-muted">${(maxScore*100).toFixed(1)}% 置信度</div>
+            </div>
+            <div class="w-50">
+                ${data.scores.map((score, i) => `
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="me-2 text-nowrap" style="width:120px; overflow:hidden; text-overflow:ellipsis">
+                            ${data.emotions[i]}
+                        </div>
+                        <div class="progress flex-grow-1">
+                            <div class="progress-bar" role="progressbar" 
+                                 style="width: ${score*100}%; background: var(--primary-color)">
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `
+}
+
+function addToHistory(data) {
+    const historyList = document.getElementById('historyList')
+    const date = new Date().toLocaleString()
+    const maxScore = Math.max(...data.scores)
+    const emotion = data.emotions[data.scores.indexOf(maxScore)].split('/')[0]
+    
+    historyList.insertAdjacentHTML('afterbegin', `
+        <div class="list-group-item history-item">
+            <div class="d-flex justify-content-between">
+                <span>${date}</span>
+                <span class="badge bg-primary">${emotion}</span>
+            </div>
+            <small class="text-muted">置信度 ${(maxScore*100).toFixed(1)}%</small>
+        </div>
+    `)
+}
+</script>
+
+<script src="https://cdn.bootcdn.net/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
