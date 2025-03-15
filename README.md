@@ -74,4 +74,5 @@ python manage.py runserver
 - FunASR 提供的情感识别模型
 - Django 框架
 - Bootstrap 框架
+
 ⭐️ 如果这个项目对你有帮助，欢迎点个 star！
